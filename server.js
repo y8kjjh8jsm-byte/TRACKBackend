@@ -5,6 +5,7 @@ const cors = require("cors");
 const OpenAI = require("openai");
 
 const app = express();
+
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
@@ -20,8 +21,12 @@ app.post("/analyze-food", async (req, res) => {
     try {
         const { image } = req.body;
 
-        if (!image) {
-            return res.status(400).json({ error: "No image provided" });
+        if (!image || typeof image !== "string") {
+            return res.status(400).json({ error: "No valid image provided" });
+        }
+
+        if (!image.startsWith("data:image/")) {
+            return res.status(400).json({ error: "Invalid image format" });
         }
 
         const response = await openai.responses.create({
@@ -33,24 +38,33 @@ app.post("/analyze-food", async (req, res) => {
                         {
                             type: "input_text",
                             text: `
-You are a food nutrition estimator.
+You are a nutrition estimator for a fitness tracking app.
 
-Look at the meal photo and estimate the most likely food name and nutrition.
+Analyze the meal photo carefully and estimate the most likely food items, portion size and nutrition.
 
-Return ONLY valid JSON in this exact format:
+Return ONLY valid JSON. Do not include markdown, comments, explanations or extra text.
+
+Use this exact JSON format:
 {
   "name": "Chicken rice bowl",
-  "serving": "1 bowl",
+  "serving": "1 medium bowl",
   "calories": 650,
   "protein": 42,
   "carbs": 72,
-  "fat": 18
+  "fat": 18,
+  "confidence": 0.82,
+  "notes": "Estimated from visible chicken, rice and vegetables."
 }
 
 Rules:
-- Do not include extra text.
-- Use integers only.
-- If unsure, make a reasonable estimate.
+- Return integers for calories, protein, carbs and fat.
+- Confidence must be between 0 and 1.
+- If multiple foods are visible, combine them into one meal name.
+- If the image is unclear, still estimate but set confidence below 0.55.
+- Do not invent extreme values.
+- Use realistic portions.
+- If nutrition is uncertain, choose a reasonable middle estimate.
+- Never return text outside the JSON object.
 `
                         },
                         {
