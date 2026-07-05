@@ -30,42 +30,87 @@ function item(brand, name, calories, protein, carbs, fat, serving, aliases = [])
 }
 
 const restaurantFoods = [
-  item("mcdonalds", "big mac", 509, 26, 42, 25, "1 burger", ["big mac burger", "mcdonalds big mac", "big mac meal"]),
-  item("mcdonalds", "quarter pounder with cheese", 518, 31, 37, 26, "1 burger", ["quarter pounder", "qp with cheese"]),
-  item("mcdonalds", "mcchicken sandwich", 369, 17, 40, 15, "1 sandwich", ["mcchicken", "mayo chicken"]),
+  item("mcdonalds", "big mac", 509, 26, 42, 25, "1 burger", ["big mac meal"]),
+  item("mcdonalds", "quarter pounder with cheese", 518, 31, 37, 26, "1 burger", ["quarter pounder"]),
+  item("mcdonalds", "double cheeseburger", 445, 27, 34, 22, "1 burger", ["double cheese burger"]),
+  item("mcdonalds", "mcchicken sandwich", 369, 17, 40, 15, "1 sandwich", ["mcchicken"]),
+  item("mcdonalds", "chicken nuggets 6 piece", 261, 15, 18, 15, "6 nuggets", ["6 nuggets"]),
   item("mcdonalds", "medium fries", 337, 4, 42, 17, "1 medium fries", ["fries", "chips"]),
   item("mcdonalds", "large fries", 444, 5, 55, 22, "1 large fries", ["large chips"]),
+  item("mcdonalds", "filet o fish", 319, 14, 38, 12, "1 burger", ["fish burger"]),
+  item("mcdonalds", "mcflurry oreo", 258, 6, 38, 9, "1 mcflurry", ["oreo mcflurry"]),
 
-  item("kfc", "zinger burger", 450, 26, 43, 18, "1 burger", ["zinger", "kfc zinger"]),
-  item("kfc", "fillet burger", 475, 32, 48, 18, "1 burger", ["kfc fillet"]),
+  item("kfc", "zinger burger", 450, 26, 43, 18, "1 burger", ["zinger"]),
+  item("kfc", "zinger box meal", 950, 45, 95, 43, "1 box meal", ["zinger meal"]),
+  item("kfc", "fillet burger", 475, 32, 48, 18, "1 burger", ["chicken fillet burger"]),
   item("kfc", "popcorn chicken", 285, 17, 18, 16, "1 regular", ["popcorn chicken regular"]),
-  item("kfc", "regular fries", 250, 4, 32, 12, "1 regular fries", ["fries", "chips"]),
-  item("kfc", "zinger box meal", 950, 45, 95, 43, "1 box meal", ["zinger meal", "zinger box"]),
+  item("kfc", "regular fries", 250, 4, 32, 12, "1 fries", ["fries", "chips"]),
+  item("kfc", "hot wings 3 piece", 245, 18, 8, 16, "3 wings", ["hot wings"]),
+  item("kfc", "mini fillet", 130, 15, 8, 5, "1 mini fillet", ["chicken mini fillet"]),
 
-  item("papa johns", "medium pepperoni pizza", 2400, 104, 280, 96, "1 medium pizza", ["pepperoni medium", "medium pepperoni"]),
-  item("papa johns", "medium cheese pizza", 2100, 92, 260, 78, "1 medium pizza", ["cheese medium", "margherita medium"]),
-  item("papa johns", "slice pepperoni pizza", 300, 13, 35, 12, "1 slice", ["pepperoni slice"]),
+  item("papa johns", "medium pepperoni pizza", 2400, 104, 280, 96, "1 medium pizza", ["pepperoni medium"]),
+  item("papa johns", "medium cheese pizza", 2100, 92, 260, 78, "1 medium pizza", ["cheese pizza", "margherita"]),
+  item("papa johns", "pepperoni slice", 300, 13, 35, 12, "1 slice", ["slice of pepperoni"]),
+  item("papa johns", "garlic bread", 560, 14, 70, 24, "1 portion", ["garlic pizza bread"]),
 
-  item("dominos", "medium pepperoni pizza", 2200, 96, 270, 88, "1 medium pizza", ["medium pepperoni", "pepperoni medium"]),
-  item("dominos", "medium cheese pizza", 2050, 88, 255, 75, "1 medium pizza", ["medium margherita", "cheese medium"]),
-  item("pizza hut", "medium pepperoni pizza", 2300, 95, 275, 92, "1 medium pizza", ["pepperoni medium"]),
+  item("dominos", "medium pepperoni pizza", 2200, 96, 270, 88, "1 medium pizza", ["pepperoni medium"]),
+  item("dominos", "medium cheese pizza", 2050, 88, 255, 75, "1 medium pizza", ["margherita"]),
+  item("dominos", "texas bbq pizza", 2300, 100, 280, 90, "1 medium pizza", ["bbq pizza"]),
+  item("dominos", "garlic pizza bread", 690, 20, 82, 30, "1 portion", ["garlic bread"]),
 
-  item("subway", "italian bmt 6 inch", 410, 20, 46, 16, "1 6-inch sub", ["italian bmt", "bmt"]),
+  item("pizza hut", "medium pepperoni pizza", 2300, 95, 275, 92, "1 medium pizza", ["pepperoni pizza"]),
+  item("pizza hut", "medium margherita pizza", 2000, 80, 250, 75, "1 medium pizza", ["cheese pizza"]),
+  item("pizza hut", "cookie dough", 650, 8, 85, 30, "1 dessert", ["cookie dough dessert"]),
+
+  item("subway", "italian bmt 6 inch", 410, 20, 46, 16, "1 6-inch sub", ["bmt"]),
   item("subway", "chicken tikka 6 inch", 350, 24, 45, 8, "1 6-inch sub", ["chicken tikka"]),
   item("subway", "tuna 6 inch", 430, 22, 44, 19, "1 6-inch sub", ["tuna sub"]),
+  item("subway", "meatball marinara 6 inch", 480, 24, 56, 18, "1 6-inch sub", ["meatball sub"]),
+  item("subway", "steak and cheese 6 inch", 390, 26, 43, 12, "1 6-inch sub", ["steak cheese"]),
 
-  item("nandos", "half chicken", 568, 70, 3, 31, "1 half chicken", ["half chicken nandos"]),
-  item("nandos", "quarter chicken", 284, 35, 2, 15, "1 quarter chicken", ["quarter chicken nandos"]),
+  item("nandos", "quarter chicken", 284, 35, 2, 15, "1 quarter chicken", ["quarter chicken"]),
+  item("nandos", "half chicken", 568, 70, 3, 31, "1 half chicken", ["half chicken"]),
+  item("nandos", "butterfly chicken", 352, 60, 2, 12, "1 portion", ["chicken butterfly"]),
+  item("nandos", "peri salted chips", 470, 7, 62, 22, "1 regular", ["peri chips", "fries"]),
+  item("nandos", "spicy rice", 393, 8, 75, 7, "1 regular", ["rice"]),
 
-  item("five guys", "cheeseburger", 840, 47, 40, 55, "1 burger", ["five guys cheeseburger"]),
+  item("burger king", "whopper", 657, 31, 49, 37, "1 burger", ["bk whopper"]),
+  item("burger king", "double whopper", 900, 50, 50, 58, "1 burger", ["double whopper"]),
+  item("burger king", "chicken royale", 570, 28, 55, 27, "1 burger", ["royale"]),
+  item("burger king", "medium fries", 380, 4, 50, 18, "1 fries", ["fries"]),
+
+  item("five guys", "hamburger", 700, 39, 39, 43, "1 burger", ["five guys burger"]),
+  item("five guys", "cheeseburger", 840, 47, 40, 55, "1 burger", ["cheese burger"]),
   item("five guys", "bacon cheeseburger", 920, 52, 40, 62, "1 burger", ["bacon cheese burger"]),
+  item("five guys", "regular fries", 950, 13, 131, 41, "1 regular fries", ["fries"]),
 
-  item("starbucks", "caramel frappuccino", 380, 5, 63, 14, "1 grande", ["caramel frappe", "frappuccino"]),
+  item("starbucks", "caramel frappuccino", 380, 5, 63, 14, "1 grande", ["caramel frappe"]),
   item("starbucks", "latte", 190, 13, 18, 7, "1 grande", ["caffe latte"]),
+  item("starbucks", "iced caramel macchiato", 250, 10, 37, 7, "1 grande", ["caramel macchiato"]),
+  item("starbucks", "mocha", 370, 14, 43, 15, "1 grande", ["caffe mocha"]),
+  item("starbucks", "blueberry muffin", 360, 6, 52, 14, "1 muffin", ["muffin"]),
 
   item("costa", "latte", 150, 10, 15, 6, "1 medium", ["costa latte"]),
+  item("costa", "cappuccino", 120, 8, 12, 5, "1 medium", ["costa cappuccino"]),
+  item("costa", "hot chocolate", 320, 11, 47, 10, "1 medium", ["costa hot chocolate"]),
+  item("costa", "caramel latte", 250, 10, 35, 8, "1 medium", ["caramel latte"]),
+
   item("greggs", "sausage roll", 329, 9, 24, 22, "1 sausage roll", ["greggs sausage roll"]),
-  item("pret", "chicken caesar sandwich", 480, 28, 45, 20, "1 sandwich", ["caesar sandwich"])
+  item("greggs", "steak bake", 408, 14, 30, 27, "1 bake", ["steak slice"]),
+  item("greggs", "chicken bake", 424, 18, 34, 25, "1 bake", ["chicken slice"]),
+  item("greggs", "vegan sausage roll", 309, 12, 23, 19, "1 roll", ["vegan roll"]),
+
+  item("pret", "chicken caesar sandwich", 480, 28, 45, 20, "1 sandwich", ["caesar sandwich"]),
+  item("pret", "tuna cucumber sandwich", 390, 24, 42, 14, "1 sandwich", ["tuna sandwich"]),
+  item("pret", "ham and cheese baguette", 520, 28, 58, 20, "1 baguette", ["ham cheese baguette"]),
+
+  item("taco bell", "crunchwrap supreme", 540, 16, 71, 21, "1 crunchwrap", ["crunchwrap"]),
+  item("taco bell", "beef burrito", 430, 17, 58, 14, "1 burrito", ["burrito"]),
+  item("taco bell", "quesadilla", 520, 27, 38, 28, "1 quesadilla", ["chicken quesadilla"]),
+
+  item("wagamama", "chicken katsu curry", 998, 44, 128, 35, "1 bowl", ["katsu curry"]),
+  item("wagamama", "yaki udon", 628, 25, 82, 22, "1 bowl", ["udon"]),
+  item("wagamama", "ramen", 650, 35, 80, 20, "1 bowl", ["chicken ramen"])
 ];
 
 function normalize(text) {
