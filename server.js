@@ -25,6 +25,33 @@ app.get("/", (req, res) => {
   res.send("TRACK Food AI Running");
 });
 
+const nutritionDB = {
+  rice: { calories: 170, protein: 3, carbs: 31, fat: 4 },
+  "basmati rice": { calories: 160, protein: 3, carbs: 32, fat: 2 },
+  "spiced rice": { calories: 175, protein: 3, carbs: 31, fat: 5 },
+  biryani: { calories: 190, protein: 4, carbs: 30, fat: 7 },
+  pasta: { calories: 160, protein: 6, carbs: 31, fat: 1 },
+  bread: { calories: 265, protein: 9, carbs: 49, fat: 3 },
+  potato: { calories: 87, protein: 2, carbs: 20, fat: 0 },
+  fries: { calories: 312, protein: 3, carbs: 41, fat: 15 },
+
+  chicken: { calories: 165, protein: 31, carbs: 0, fat: 4 },
+  lamb: { calories: 280, protein: 25, carbs: 0, fat: 20 },
+  beef: { calories: 250, protein: 26, carbs: 0, fat: 15 },
+  fish: { calories: 180, protein: 24, carbs: 0, fat: 8 },
+  salmon: { calories: 208, protein: 22, carbs: 0, fat: 13 },
+  egg: { calories: 155, protein: 13, carbs: 1, fat: 11 },
+
+  cheese: { calories: 400, protein: 25, carbs: 2, fat: 33 },
+  yogurt: { calories: 95, protein: 4, carbs: 7, fat: 5 },
+  salad: { calories: 25, protein: 1, carbs: 5, fat: 0 },
+  vegetables: { calories: 40, protein: 2, carbs: 8, fat: 0 },
+  sauce: { calories: 120, protein: 1, carbs: 8, fat: 9 },
+  oil: { calories: 884, protein: 0, carbs: 0, fat: 100 },
+  ghee: { calories: 900, protein: 0, carbs: 0, fat: 100 },
+  butter: { calories: 717, protein: 1, carbs: 0, fat: 81 }
+};
+
 function cleanAIJson(text) {
   return text
     .replace(/```json/g, "")
@@ -32,33 +59,118 @@ function cleanAIJson(text) {
     .trim();
 }
 
-function roundMacro(value) {
+function round(value) {
   return Math.round(Number(value) || 0);
 }
 
-function fixMealEstimate(meal) {
-  meal.name = meal.name || "Estimated meal";
-  meal.serving = meal.serving || "1 serving";
+function findNutritionMatch(name = "") {
+  const lower = name.toLowerCase();
 
-  meal.calories = roundMacro(meal.calories);
-  meal.protein = roundMacro(meal.protein);
-  meal.carbs = roundMacro(meal.carbs);
-  meal.fat = roundMacro(meal.fat);
+  const keys = Object.keys(nutritionDB);
 
-  if (!Array.isArray(meal.components)) {
-    meal.components = [];
+  const exact = keys.find((key) => lower.includes(key));
+  if (exact) return nutritionDB[exact];
+
+  if (lower.includes("rice")) return nutritionDB["spiced rice"];
+  if (lower.includes("lamb")) return nutritionDB.lamb;
+  if (lower.includes("chicken")) return nutritionDB.chicken;
+  if (lower.includes("beef")) return nutritionDB.beef;
+  if (lower.includes("pasta")) return nutritionDB.pasta;
+  if (lower.includes("oil")) return nutritionDB.oil;
+  if (lower.includes("ghee")) return nutritionDB.ghee;
+
+  return null;
+}
+
+function calculateFromDatabase(ingredients) {
+  return ingredients.map((item) => {
+    const grams = round(item.estimatedGrams || item.grams || 0);
+    const match = findNutritionMatch(item.name);
+
+    if (!match || grams <= 0) {
+      return {
+        name: item.name || "Food item",
+        estimatedGrams: grams,
+        calories: round(item.calories),
+        protein: round(item.protein),
+        carbs: round(item.carbs),
+        fat: round(item.fat),
+        source: "ai-estimate"
+      };
+    }
+
+    return {
+      name: item.name,
+      estimatedGrams: grams,
+      calories: round((match.calories * grams) / 100),
+      protein: round((match.protein * grams) / 100),
+      carbs: round((match.carbs * grams) / 100),
+      fat: round((match.fat * grams) / 100),
+      source: "track-database"
+    };
+  });
+}
+
+function applySanityChecks(meal) {
+  const name = `${meal.name} ${meal.components.map(c => c.name).join(" ")}`.toLowerCase();
+
+  const hasRice = name.includes("rice") || name.includes("biryani") || name.includes("kabsa") || name.includes("mandi");
+  const hasMeat = name.includes("lamb") || name.includes("chicken") || name.includes("beef") || name.includes("meat");
+
+  if (hasRice && hasMeat) {
+    meal.calories = Math.max(meal.calories, 750);
+    meal.protein = Math.max(meal.protein, 32);
+    meal.carbs = Math.max(meal.carbs, 65);
+    meal.fat = Math.max(meal.fat, 22);
   }
 
-  meal.components = meal.components.map((item) => ({
-    name: item.name || "Food item",
-    estimatedGrams: roundMacro(item.estimatedGrams),
-    calories: roundMacro(item.calories),
-    protein: roundMacro(item.protein),
-    carbs: roundMacro(item.carbs),
-    fat: roundMacro(item.fat)
-  }));
+  if (hasMeat && meal.protein < 25) {
+    meal.protein = 30;
+  }
+
+  if (hasRice && meal.carbs < 50) {
+    meal.carbs = 60;
+  }
 
   return meal;
+}
+
+function buildFinalMeal(aiMeal) {
+  const ingredients = Array.isArray(aiMeal.components)
+    ? aiMeal.components
+    : Array.isArray(aiMeal.ingredients)
+      ? aiMeal.ingredients
+      : [];
+
+  const calculatedComponents = calculateFromDatabase(ingredients);
+
+  let calories = 0;
+  let protein = 0;
+  let carbs = 0;
+  let fat = 0;
+
+  calculatedComponents.forEach((item) => {
+    calories += item.calories;
+    protein += item.protein;
+    carbs += item.carbs;
+    fat += item.fat;
+  });
+
+  let finalMeal = {
+    name: aiMeal.name || aiMeal.meal || "Estimated meal",
+    serving: aiMeal.serving || "1 plate",
+    calories: round(calories || aiMeal.calories),
+    protein: round(protein || aiMeal.protein),
+    carbs: round(carbs || aiMeal.carbs),
+    fat: round(fat || aiMeal.fat),
+    confidence: aiMeal.confidence || "medium",
+    notes: aiMeal.notes || "Estimated from photo using component recognition and TRACK nutrition database.",
+    components: calculatedComponents
+  };
+
+  finalMeal = applySanityChecks(finalMeal);
+
+  return finalMeal;
 }
 
 app.post("/analyze-food", verifyFirebaseToken, aiLimiter, async (req, res) => {
@@ -80,37 +192,32 @@ app.post("/analyze-food", verifyFirebaseToken, aiLimiter, async (req, res) => {
             {
               type: "input_text",
               text: `
-You are an expert nutrition AI for the TRACK fitness app.
+You are the food vision system for TRACK.
 
-Carefully inspect the entire food image.
+Look at the image and identify the meal component by component.
 
-Your job:
-1. Identify EVERY visible food component.
-2. Estimate each component separately.
-3. Estimate grams for each component.
-4. Estimate calories, protein, carbs and fat for each component.
-5. Add all components together for the final meal total.
+Return ONLY valid JSON.
 
-Important rules:
-- Do NOT only identify the largest item.
-- Do NOT ignore meat, chicken, lamb, beef, fish, eggs, cheese, sauces, oils or toppings.
-- If rice and meat are visible, estimate them separately.
-- If bone-in meat is visible, only count the edible meat.
-- If the meal looks oily, buttery, creamy, fried, or cooked with ghee, include that fat.
-- Be realistic, not too low.
-- For mixed meals, break them into parts like rice, meat, sauce, oil, vegetables, bread, cheese, dressing, etc.
-- Return ONLY valid JSON.
-- No explanation outside the JSON.
+Do NOT calculate final nutrition yourself unless needed.
+Your main job is to estimate visible ingredients and realistic gram amounts.
 
-Return this exact JSON structure:
+Rules:
+- Identify every visible component.
+- Estimate grams for each component.
+- Include hidden cooking fats when likely, such as oil, butter or ghee.
+- If meat is bone-in, estimate edible meat only.
+- Do not ignore protein sources.
+- Do not call a rice-and-meat meal only "rice".
+- Be realistic with portions.
+- Give confidence as low, medium or high.
+
+Return this exact JSON:
 
 {
   "name": "",
   "serving": "",
-  "calories": 0,
-  "protein": 0,
-  "carbs": 0,
-  "fat": 0,
+  "confidence": "",
+  "notes": "",
   "components": [
     {
       "name": "",
@@ -123,8 +230,18 @@ Return this exact JSON structure:
   ]
 }
 
-Example:
-If the image shows lamb rice, return rice, lamb, and oil/ghee as separate components, then total them.
+Example for rice with lamb:
+{
+  "name": "Spiced rice with lamb",
+  "serving": "1 plate",
+  "confidence": "medium",
+  "notes": "Estimated from visible rice, lamb and likely cooking oil.",
+  "components": [
+    { "name": "spiced rice", "estimatedGrams": 320, "calories": 0, "protein": 0, "carbs": 0, "fat": 0 },
+    { "name": "lamb", "estimatedGrams": 150, "calories": 0, "protein": 0, "carbs": 0, "fat": 0 },
+    { "name": "ghee or cooking oil", "estimatedGrams": 10, "calories": 0, "protein": 0, "carbs": 0, "fat": 0 }
+  ]
+}
 `
             },
             {
@@ -136,15 +253,15 @@ If the image shows lamb rice, return rice, lamb, and oil/ghee as separate compon
       ]
     });
 
-    const cleanedText = cleanAIJson(response.output_text);
-    const parsedMeal = JSON.parse(cleanedText);
-    const finalMeal = fixMealEstimate(parsedMeal);
+    const cleaned = cleanAIJson(response.output_text);
+    const aiMeal = JSON.parse(cleaned);
+    const finalMeal = buildFinalMeal(aiMeal);
 
     console.log(finalMeal);
 
-   res.json({
-  result: JSON.stringify(finalMeal)
-});
+    res.json({
+      result: JSON.stringify(finalMeal)
+    });
 
   } catch (error) {
     console.error(error);
