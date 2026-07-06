@@ -142,7 +142,9 @@ If the image shows lamb rice, return rice, lamb, and oil/ghee as separate compon
 
     console.log(finalMeal);
 
-    res.json(finalMeal);
+   res.json({
+  result: JSON.stringify(finalMeal)
+});
 
   } catch (error) {
     console.error(error);
