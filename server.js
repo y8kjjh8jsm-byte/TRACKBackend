@@ -260,8 +260,15 @@ Example for rice with lamb:
     console.log(finalMeal);
 
     res.json({
-      result: JSON.stringify(finalMeal)
-    });
+  result: JSON.stringify({
+    name: finalMeal.name,
+    serving: finalMeal.serving,
+    calories: finalMeal.calories,
+    protein: finalMeal.protein,
+    carbs: finalMeal.carbs,
+    fat: finalMeal.fat
+  })
+});
 
   } catch (error) {
     console.error(error);
