@@ -1,67 +1,24 @@
-function cleanAIJson(text) {
-  return text
-    .replace(/```json/g, "")
-    .replace(/```/g, "")
-    .trim();
-}
-
-async function detectFoodComponents(openai, image) {
-  const response = await openai.responses.create({
-    model: "gpt-4.1-mini",
-    input: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: `
-You are TRACK's food vision engine.
-
-Detect every visible food component in the image.
-
-Return ONLY valid JSON.
-
-Your job:
-- Identify each visible food item.
-- Estimate edible grams for each item.
-- Include likely hidden fats such as oil, butter or ghee.
-- If meat is bone-in, estimate edible meat only.
-- Do not calculate final nutrition.
-- Do not ignore protein sources.
-- Do not call a rice-and-meat meal only rice.
-- Be realistic with portion sizes.
-- Give confidence as low, medium or high.
-
-Return this exact JSON:
-
 {
-  "name": "",
-  "serving": "",
-  "confidence": "",
-  "notes": "",
-  "components": [
-    {
-      "name": "",
-      "estimatedGrams": 0,
-      "confidence": ""
-    }
-  ]
+  "rice": { "calories": 170, "protein": 3, "carbs": 31, "fat": 4 },
+  "basmati rice": { "calories": 160, "protein": 3, "carbs": 32, "fat": 2 },
+  "spiced rice": { "calories": 175, "protein": 3, "carbs": 31, "fat": 5 },
+  "biryani": { "calories": 190, "protein": 4, "carbs": 30, "fat": 7 },
+  "pasta": { "calories": 160, "protein": 6, "carbs": 31, "fat": 1 },
+  "bread": { "calories": 265, "protein": 9, "carbs": 49, "fat": 3 },
+  "potato": { "calories": 87, "protein": 2, "carbs": 20, "fat": 0 },
+  "fries": { "calories": 312, "protein": 3, "carbs": 41, "fat": 15 },
+  "chicken": { "calories": 165, "protein": 31, "carbs": 0, "fat": 4 },
+  "lamb": { "calories": 280, "protein": 25, "carbs": 0, "fat": 20 },
+  "beef": { "calories": 250, "protein": 26, "carbs": 0, "fat": 15 },
+  "fish": { "calories": 180, "protein": 24, "carbs": 0, "fat": 8 },
+  "salmon": { "calories": 208, "protein": 22, "carbs": 0, "fat": 13 },
+  "egg": { "calories": 155, "protein": 13, "carbs": 1, "fat": 11 },
+  "cheese": { "calories": 400, "protein": 25, "carbs": 2, "fat": 33 },
+  "yogurt": { "calories": 95, "protein": 4, "carbs": 7, "fat": 5 },
+  "salad": { "calories": 25, "protein": 1, "carbs": 5, "fat": 0 },
+  "vegetables": { "calories": 40, "protein": 2, "carbs": 8, "fat": 0 },
+  "sauce": { "calories": 120, "protein": 1, "carbs": 8, "fat": 9 },
+  "oil": { "calories": 884, "protein": 0, "carbs": 0, "fat": 100 },
+  "ghee": { "calories": 900, "protein": 0, "carbs": 0, "fat": 100 },
+  "butter": { "calories": 717, "protein": 1, "carbs": 0, "fat": 81 }
 }
-`
-          },
-          {
-            type: "input_image",
-            image_url: image
-          }
-        ]
-      }
-    ]
-  });
-
-  const cleaned = cleanAIJson(response.output_text);
-  return JSON.parse(cleaned);
-}
-
-module.exports = {
-  detectFoodComponents
-};
