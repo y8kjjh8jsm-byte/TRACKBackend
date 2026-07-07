@@ -27,11 +27,9 @@ router.post("/", verifyFirebaseToken, searchLimiter, async (req, res) => {
     }
 
     const parsed = await parseFoodSearch(openai, query);
-    const result = await searchFood(parsed);
+    const results = await searchFood(parsed);
 
-    res.json({
-      results: [result]
-    });
+    res.json({ results });
 
   } catch (error) {
     console.error("Food search error:", error);
