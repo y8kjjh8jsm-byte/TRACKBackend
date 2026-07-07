@@ -7,6 +7,11 @@ const { detectFoodComponents } = require("../services/visionService");
 const { calculateMealNutrition } = require("../services/nutritionCalculator");
 const { validateMeal } = require("../services/validationEngine");
 const { applyConfidenceScores } = require("../services/confidenceEngine");
+const {
+  createMealFingerprint,
+  getCachedMeal,
+  saveCachedMeal
+} = require("../services/cacheService");
 
 const router = express.Router();
 
@@ -25,17 +30,48 @@ router.post("/", verifyFirebaseToken, aiLimiter, async (req, res) => {
     const image = req.body.image;
 
     if (!image) {
-      return res.status(400).json({
-        error: "No image provided"
-      });
+      return res.status(400).json({ error: "No image provided" });
     }
 
     const detectedMeal = await detectFoodComponents(openai, image);
+    const fingerprint = createMealFingerprint(detectedMeal);
+
+    const cachedMeal = getCachedMeal(fingerprint);
+
+    if (cachedMeal) {
+      console.log("TRACK Food Engine cache hit:", cachedMeal.name);
+
+      return res.json({
+        result: JSON.stringify({
+          name: cachedMeal.name,
+          serving: cachedMeal.serving,
+          calories: cachedMeal.calories,
+          protein: cachedMeal.protein,
+          carbs: cachedMeal.carbs,
+          fat: cachedMeal.fat
+        })
+      });
+    }
+
     const calculatedMeal = await calculateMealNutrition(detectedMeal);
     const validatedMeal = validateMeal(calculatedMeal);
     const finalMeal = applyConfidenceScores(validatedMeal);
 
-    console.log("TRACK Food Engine result:", finalMeal);
+    saveCachedMeal(fingerprint, finalMeal);
+
+    console.log("==================================");
+    console.log("TRACK FOOD ENGINE");
+    console.log("Meal:", finalMeal.name);
+
+    finalMeal.components.forEach(component => {
+      console.log(`${component.name} -> ${component.source} (${component.confidenceScore}%)`);
+    });
+
+    console.log("Calories:", finalMeal.calories);
+    console.log("Protein:", finalMeal.protein);
+    console.log("Carbs:", finalMeal.carbs);
+    console.log("Fat:", finalMeal.fat);
+    console.log("==================================");
 
     res.json({
       result: JSON.stringify({
@@ -45,12 +81,9 @@ router.post("/", verifyFirebaseToken, aiLimiter, async (req, res) => {
         protein: finalMeal.protein,
         carbs: finalMeal.carbs,
         fat: finalMeal.fat
-      }),
-      debug: {
-        confidenceScore: finalMeal.confidenceScore,
-        components: finalMeal.components
-      }
+      })
     });
+
   } catch (error) {
     console.error("Analyze food error:", error);
 

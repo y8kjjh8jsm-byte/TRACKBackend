@@ -1,6 +1,7 @@
 const { searchUSDA } = require("./usdaService");
 const { searchOpenFoodFacts } = require("./openFoodFactsService");
 const { findLocalNutritionMatch } = require("./localNutritionService");
+const { detectRestaurant, getRestaurantNutrition } = require("./restaurantService");
 
 function round(value) {
   return Math.round(Number(value) || 0);
@@ -18,11 +19,15 @@ function scaleNutrition(nutrition, grams) {
   };
 }
 
-async function getNutritionForComponent(component) {
+async function getNutritionForComponent(component, restaurant) {
   const name = component.name || "Food item";
   const grams = round(component.estimatedGrams || component.grams || 0);
 
-  let nutrition = await searchUSDA(name);
+  let nutrition = getRestaurantNutrition(name, restaurant);
+
+  if (!nutrition) {
+    nutrition = await searchUSDA(name);
+  }
 
   if (!nutrition) {
     nutrition = await searchOpenFoodFacts(name);
@@ -48,7 +53,7 @@ async function getNutritionForComponent(component) {
     };
   }
 
-  const scaled = scaleNutrition(nutrition, grams);
+  const scaled = scaleNutrition(nutrition, grams || 100);
 
   return {
     name,
@@ -69,10 +74,11 @@ async function calculateMealNutrition(aiMeal) {
       ? aiMeal.ingredients
       : [];
 
+  const restaurant = detectRestaurant(aiMeal);
   const calculatedComponents = [];
 
   for (const component of components) {
-    const calculated = await getNutritionForComponent(component);
+    const calculated = await getNutritionForComponent(component, restaurant);
     calculatedComponents.push(calculated);
   }
 
@@ -89,6 +95,7 @@ async function calculateMealNutrition(aiMeal) {
   return {
     name: aiMeal.name || aiMeal.meal || "Estimated meal",
     serving: aiMeal.serving || "1 plate",
+    restaurant,
     confidence: aiMeal.confidence || "medium",
     notes: aiMeal.notes || "Estimated from photo using TRACK Food Engine.",
     calories: round(totals.calories),
