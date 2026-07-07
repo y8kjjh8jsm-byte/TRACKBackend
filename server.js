@@ -67,23 +67,40 @@ function findNutritionMatch(name = "") {
   const lower = name.toLowerCase();
 
   const keys = Object.keys(nutritionDB);
-
   const exact = keys.find((key) => lower.includes(key));
   if (exact) return nutritionDB[exact];
 
   if (lower.includes("rice")) return nutritionDB["spiced rice"];
+  if (lower.includes("mandi")) return nutritionDB["spiced rice"];
+  if (lower.includes("kabsa")) return nutritionDB["spiced rice"];
+  if (lower.includes("biryani")) return nutritionDB.biryani;
+
   if (lower.includes("lamb")) return nutritionDB.lamb;
   if (lower.includes("chicken")) return nutritionDB.chicken;
   if (lower.includes("beef")) return nutritionDB.beef;
+  if (lower.includes("fish")) return nutritionDB.fish;
+  if (lower.includes("salmon")) return nutritionDB.salmon;
+  if (lower.includes("egg")) return nutritionDB.egg;
+
   if (lower.includes("pasta")) return nutritionDB.pasta;
+  if (lower.includes("bread")) return nutritionDB.bread;
+  if (lower.includes("potato")) return nutritionDB.potato;
+  if (lower.includes("fries")) return nutritionDB.fries;
+
   if (lower.includes("oil")) return nutritionDB.oil;
   if (lower.includes("ghee")) return nutritionDB.ghee;
+  if (lower.includes("butter")) return nutritionDB.butter;
+  if (lower.includes("sauce")) return nutritionDB.sauce;
+  if (lower.includes("cheese")) return nutritionDB.cheese;
+  if (lower.includes("yogurt")) return nutritionDB.yogurt;
+  if (lower.includes("salad")) return nutritionDB.salad;
+  if (lower.includes("vegetables")) return nutritionDB.vegetables;
 
   return null;
 }
 
-function calculateFromDatabase(ingredients) {
-  return ingredients.map((item) => {
+function calculateFromDatabase(components) {
+  return components.map((item) => {
     const grams = round(item.estimatedGrams || item.grams || 0);
     const match = findNutritionMatch(item.name);
 
@@ -100,7 +117,7 @@ function calculateFromDatabase(ingredients) {
     }
 
     return {
-      name: item.name,
+      name: item.name || "Food item",
       estimatedGrams: grams,
       calories: round((match.calories * grams) / 100),
       protein: round((match.protein * grams) / 100),
@@ -112,37 +129,68 @@ function calculateFromDatabase(ingredients) {
 }
 
 function applySanityChecks(meal) {
-  const name = `${meal.name} ${meal.components.map(c => c.name).join(" ")}`.toLowerCase();
+  const text = `${meal.name} ${meal.components.map(c => c.name).join(" ")}`.toLowerCase();
 
-  const hasRice = name.includes("rice") || name.includes("biryani") || name.includes("kabsa") || name.includes("mandi");
-  const hasMeat = name.includes("lamb") || name.includes("chicken") || name.includes("beef") || name.includes("meat");
+  const hasRice =
+    text.includes("rice") ||
+    text.includes("biryani") ||
+    text.includes("kabsa") ||
+    text.includes("mandi");
+
+  const hasMeat =
+    text.includes("lamb") ||
+    text.includes("chicken") ||
+    text.includes("beef") ||
+    text.includes("meat");
+
+  const hasOil =
+    text.includes("oil") ||
+    text.includes("ghee") ||
+    text.includes("butter");
+
+  const meatGrams = meal.components
+    .filter((c) => {
+      const n = c.name.toLowerCase();
+      return (
+        n.includes("lamb") ||
+        n.includes("chicken") ||
+        n.includes("beef") ||
+        n.includes("meat")
+      );
+    })
+    .reduce((sum, c) => sum + (Number(c.estimatedGrams) || 0), 0);
+
+  const riceGrams = meal.components
+    .filter((c) => c.name.toLowerCase().includes("rice"))
+    .reduce((sum, c) => sum + (Number(c.estimatedGrams) || 0), 0);
+
+  if (meatGrams > 0) {
+    meal.protein = Math.max(meal.protein, Math.round(meatGrams * 0.18));
+    meal.calories = Math.max(meal.calories, Math.round(meatGrams * 1.8));
+  }
+
+  if (riceGrams > 0) {
+    meal.carbs = Math.max(meal.carbs, Math.round(riceGrams * 0.25));
+  }
 
   if (hasRice && hasMeat) {
-    meal.calories = Math.max(meal.calories, 750);
-    meal.protein = Math.max(meal.protein, 32);
-    meal.carbs = Math.max(meal.carbs, 65);
-    meal.fat = Math.max(meal.fat, 22);
-  }
-
-  if (hasMeat && meal.protein < 25) {
-    meal.protein = 30;
-  }
-
-  if (hasRice && meal.carbs < 50) {
-    meal.carbs = 60;
+    meal.calories = Math.max(meal.calories, 650);
+    meal.protein = Math.max(meal.protein, 30);
+    meal.carbs = Math.max(meal.carbs, 55);
+    meal.fat = Math.max(meal.fat, hasOil ? 18 : 12);
   }
 
   return meal;
 }
 
 function buildFinalMeal(aiMeal) {
-  const ingredients = Array.isArray(aiMeal.components)
+  const components = Array.isArray(aiMeal.components)
     ? aiMeal.components
     : Array.isArray(aiMeal.ingredients)
       ? aiMeal.ingredients
       : [];
 
-  const calculatedComponents = calculateFromDatabase(ingredients);
+  const calculatedComponents = calculateFromDatabase(components);
 
   let calories = 0;
   let protein = 0;
@@ -207,6 +255,7 @@ Rules:
 - Include hidden cooking fats when likely, such as oil, butter or ghee.
 - If meat is bone-in, estimate edible meat only.
 - Do not ignore protein sources.
+- If there are multiple visible meat pieces, estimate the total edible meat grams carefully.
 - Do not call a rice-and-meat meal only "rice".
 - Be realistic with portions.
 - Give confidence as low, medium or high.
@@ -260,15 +309,15 @@ Example for rice with lamb:
     console.log(finalMeal);
 
     res.json({
-  result: JSON.stringify({
-    name: finalMeal.name,
-    serving: finalMeal.serving,
-    calories: finalMeal.calories,
-    protein: finalMeal.protein,
-    carbs: finalMeal.carbs,
-    fat: finalMeal.fat
-  })
-});
+      result: JSON.stringify({
+        name: finalMeal.name,
+        serving: finalMeal.serving,
+        calories: finalMeal.calories,
+        protein: finalMeal.protein,
+        carbs: finalMeal.carbs,
+        fat: finalMeal.fat
+      })
+    });
 
   } catch (error) {
     console.error(error);
