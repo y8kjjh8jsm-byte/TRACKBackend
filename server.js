@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 
 const analyzeFoodRouter = require("./routes/analyzeFood");
+const searchFoodRouter = require("./routes/searchFood");
 
 const app = express();
 
@@ -15,6 +16,7 @@ app.get("/", (req, res) => {
 });
 
 app.use("/analyze-food", analyzeFoodRouter);
+app.use("/search-food", searchFoodRouter);
 
 const PORT = process.env.PORT || 3000;
 
