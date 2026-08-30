@@ -4,7 +4,10 @@ const {
   parseIntent,
   brandMatches,
   nutritionLooksSane,
-  normalizeSearchPayload
+  normalizeSearchPayload,
+  conflictingSameFoodServing,
+  servingLabelKind,
+  scaledServingFromIntent
 } = require("../services/fatSecretService");
 
 function hit({ name, brand, serving = "1 serving", calories = 400, protein = 20, carbs = 40, fat = 15, isDefault = false, servingKind = "consumer", size = "", format = "Item" }) {
@@ -99,6 +102,110 @@ test("normalises FatSecret v5 detailed servings and default flag", () => {
 test("brand matching tolerates punctuation", () => {
   assert.equal(brandMatches("McDonalds", "McDonald's"), true);
   assert.equal(brandMatches("Starbucks", "McDonald's"), false);
+});
+
+
+test("rejects the previously observed corrupted Big Mac macro/calorie record", () => {
+  const results = rankAndDedupe([
+    hit({ name: "Big Mac", brand: "McDonald's", serving: "1 burger", calories: 493, protein: 26, carbs: 42, fat: 24, isDefault: true }),
+    hit({ name: "Big Mac", brand: "McDonald's", serving: "1 serving", calories: 978, protein: 13, carbs: 21, fat: 4 })
+  ], "McDonald's Big Mac", 30);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].calories, 493);
+});
+
+test("suppresses conflicting vague restaurant serving when a concrete serving exists", () => {
+  const results = rankAndDedupe([
+    hit({ name: "Zinger Burger", brand: "KFC", serving: "1 serving", calories: 224, protein: 13, carbs: 31, fat: 5, servingKind: "other" }),
+    hit({ name: "Zinger Burger", brand: "KFC", serving: "1 burger", calories: 450, protein: 26, carbs: 45, fat: 18, servingKind: "consumer", isDefault: true })
+  ], "KFC Zinger Burger", 30);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].serving, "1 burger");
+});
+
+test("allows genuinely distinct restaurant sizes", () => {
+  const results = rankAndDedupe([
+    hit({ name: "Caffe Latte", brand: "Starbucks", serving: "Tall", calories: 150, protein: 10, carbs: 15, fat: 6, size: "Tall", servingKind: "size" }),
+    hit({ name: "Caffe Latte", brand: "Starbucks", serving: "Grande", calories: 210, protein: 13, carbs: 22, fat: 8, size: "Grande", servingKind: "size" })
+  ], "Starbucks Caffe Latte", 30);
+  assert.equal(results.length, 2);
+});
+
+test("Nando's branded query rejects generic chicken", () => {
+  const results = rankAndDedupe([
+    hit({ name: "Butterfly Chicken", brand: "Nando's", serving: "1 serving", calories: 330, protein: 56, carbs: 2, fat: 11 }),
+    { ...hit({ name: "Chicken Breast", brand: "", serving: "100 g", calories: 165, protein: 31, carbs: 0, fat: 4 }), foodType: "Generic" }
+  ], "Nando's Butterfly Chicken", 30);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].brand, "Nando's");
+});
+
+test("serving conflict helper recognises vague-vs-concrete conflicts", () => {
+  const vague = hit({ name: "Zinger Burger", brand: "KFC", serving: "1 serving", calories: 224, protein: 13, carbs: 31, fat: 5, servingKind: "other" });
+  const concrete = hit({ name: "Zinger Burger", brand: "KFC", serving: "1 burger", calories: 450, protein: 26, carbs: 45, fat: 18, servingKind: "consumer" });
+  assert.equal(servingLabelKind(vague), "vague");
+  assert.equal(conflictingSameFoodServing(vague, concrete), true);
+});
+
+test("malformed FatSecret payload normalises safely to no rows", () => {
+  assert.deepEqual(normalizeSearchPayload({ broken: true }, "GB"), []);
+});
+
+
+test("parses and scales Chicken breast 200g", () => {
+  const intent = parseIntent("Chicken breast 200g");
+  assert.equal(intent.requestedGrams, 200);
+  assert.deepEqual(intent.itemTokens, ["chicken", "breast"]);
+  const base = { ...hit({ name: "Chicken Breast", brand: "", serving: "100 g", calories: 165, protein: 31, carbs: 0, fat: 4 }), metricAmount: 100, metricUnit: "g", foodType: "Generic", servingKind: "reference" };
+  const scaled = scaledServingFromIntent([base], intent);
+  assert.equal(scaled.serving, "200 g");
+  assert.equal(Math.round(scaled.calories), 330);
+  assert.equal(Math.round(scaled.protein), 62);
+});
+
+test("parses and scales 2 large eggs", () => {
+  const intent = parseIntent("2 large eggs");
+  assert.equal(intent.quantity, 2);
+  assert.deepEqual(intent.itemTokens, ["eggs"]);
+  const base = { ...hit({ name: "Large Egg", brand: "", serving: "1 large egg", calories: 72, protein: 6, carbs: 0.4, fat: 5 }), foodType: "Generic", servingKind: "consumer" };
+  const scaled = scaledServingFromIntent([base], intent);
+  assert.equal(scaled.serving, "2 × 1 large egg");
+  assert.equal(Math.round(scaled.calories), 144);
+});
+
+test("banana generic query remains a clean item query", () => {
+  const intent = parseIntent("Banana");
+  assert.equal(intent.brand, "");
+  assert.deepEqual(intent.itemTokens, ["banana"]);
+});
+
+test("McDonald's Medium Fries preserves brand and size intent", () => {
+  const intent = parseIntent("McDonald's Medium Fries");
+  assert.equal(intent.brand, "mcdonald's");
+  assert.equal(intent.size, "Medium");
+  assert.deepEqual(intent.itemTokens, ["fries"]);
+});
+
+test("Starbucks Caramel Macchiato Grande preserves requested size", () => {
+  const intent = parseIntent("Starbucks Caramel Macchiato Grande");
+  assert.equal(intent.brand, "starbucks");
+  assert.equal(intent.size, "Grande");
+  assert.deepEqual(intent.itemTokens, ["caramel", "macchiato"]);
+});
+
+test("meal/combo intent is detected without treating meal as item token", () => {
+  const intent = parseIntent("McDonald's Big Mac meal");
+  assert.equal(intent.mealRequested, true);
+  assert.deepEqual(intent.itemTokens, ["big", "mac"]);
+});
+
+test("branded supermarket food can rank without restaurant alias", () => {
+  const rows = rankAndDedupe([
+    { ...hit({ name: "Greek Style Yogurt", brand: "Fage", serving: "1 pot", calories: 120, protein: 18, carbs: 6, fat: 2 }), foodType: "Brand", servingKind: "consumer" },
+    { ...hit({ name: "Vanilla Yogurt", brand: "Other", serving: "1 pot", calories: 180, protein: 8, carbs: 24, fat: 6 }), foodType: "Brand", servingKind: "consumer" }
+  ], "Fage Greek Style Yogurt", 30);
+  assert(rows.length >= 1);
+  assert.equal(rows[0].brand, "Fage");
 });
 
 let passed = 0;

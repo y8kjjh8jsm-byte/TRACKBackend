@@ -1,3 +1,5 @@
+const { nutritionAudit } = require("./nutritionQualityService");
+
 let tokenCache = { token: null, expiresAt: 0 };
 const searchCache = new Map();
 const SEARCH_TTL_MS = 10 * 60 * 1000;
@@ -154,18 +156,31 @@ function parseIntent(query = "") {
 
   const size = detectSize(raw);
   const mealRequested = /\b(meal|combo|meal deal|box meal)\b/i.test(raw);
-  const quantityMatch = f.match(/^\s*(\d+(?:\.\d+)?)\s+/);
+  const quantityMatch = f.match(/^\s*(\d+(?:\.\d+)?)\s+(?!g\b|kg\b|ml\b|l\b)/);
   const quantity = quantityMatch ? Math.max(0.25, Math.min(num(quantityMatch[1], 1), 20)) : 1;
+  const weightMatch = f.match(/\b(\d+(?:\.\d+)?)\s*(kg|g)\b/);
+  const volumeMatch = f.match(/\b(\d+(?:\.\d+)?)\s*(ml|l)\b/);
+  const requestedGrams = weightMatch ? num(weightMatch[1]) * (weightMatch[2] === "kg" ? 1000 : 1) : 0;
+  const requestedMl = volumeMatch ? num(volumeMatch[1]) * (volumeMatch[2] === "l" ? 1000 : 1) : 0;
+
+  // Measurements and a leading count describe the requested serving, not the food name.
+  itemText = itemText
+    .replace(/^\s*\d+(?:\.\d+)?\s+(?!g\b|kg\b|ml\b|l\b)/, " ")
+    .replace(/\b\d+(?:\.\d+)?\s*(?:kg|g|ml|l)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
   return {
     raw,
     normalized: f,
     brand,
     itemText,
-    itemTokens: tokens(itemText).filter(t => !["small", "medium", "large", "tall", "grande", "venti", "short", "meal", "combo"].includes(t)),
+    itemTokens: tokens(itemText).filter(t => !/^\d/.test(t) && !["small", "medium", "large", "tall", "grande", "venti", "short", "meal", "combo"].includes(t)),
     size,
     mealRequested,
     quantity,
+    requestedGrams,
+    requestedMl,
     isRestaurantIntent: Boolean(brand)
   };
 }
@@ -475,17 +490,7 @@ function scoreResult(result, queryOrIntent) {
 }
 
 function nutritionLooksSane(item) {
-  const values = [item.calories, item.protein, item.carbs, item.fat].map(v => num(v, -1));
-  if (values.some(v => v < 0)) return false;
-  if (item.calories > 6000 || item.protein > 500 || item.carbs > 1000 || item.fat > 500) return false;
-  if (values.every(v => v === 0)) return false;
-  // Macro-derived energy is only a loose sanity check because alcohol/fibre/rounding exist.
-  const macroKcal = item.protein * 4 + item.carbs * 4 + item.fat * 9;
-  if (item.calories > 80 && macroKcal > 0) {
-    const ratio = macroKcal / item.calories;
-    if (ratio < 0.35 || ratio > 1.8) return false;
-  }
-  return true;
+  return nutritionAudit(item, { strict: true }).ok;
 }
 
 function canonicalFoodKey(item) {
@@ -502,19 +507,66 @@ function servingDuplicateKey(item) {
   return `${canonicalFoodKey(item)}|${size}|${serving}|${kcal}|${p}|${c}|${f}`;
 }
 
+function servingLabelKind(item) {
+  const text = fold(item.serving || "");
+  if (!text || text === "serving" || /^1 serving$/.test(text) || /^1 portion$/.test(text)) return "vague";
+  if (item.servingKind === "reference") return "reference";
+  if (item.size || item.servingKind === "size") return "size";
+  if (/\b(burger|sandwich|wrap|breast|fillet|piece|slice|bottle|can|cup|pack)\b/.test(text)) return "consumer";
+  return item.servingKind || "other";
+}
+
+function clearlyDistinctServing(a, b) {
+  const sizeA = fold(a.size || "");
+  const sizeB = fold(b.size || "");
+  if (sizeA && sizeB && sizeA !== sizeB) return true;
+
+  const metricA = num(a.metricAmount, 0);
+  const metricB = num(b.metricAmount, 0);
+  const unitA = fold(a.metricUnit || "");
+  const unitB = fold(b.metricUnit || "");
+  if (metricA > 0 && metricB > 0 && unitA && unitA === unitB) {
+    const ratio = Math.max(metricA, metricB) / Math.max(1, Math.min(metricA, metricB));
+    if (ratio >= 1.25) return true;
+  }
+
+  const kindA = servingLabelKind(a);
+  const kindB = servingLabelKind(b);
+  if (kindA === "reference" || kindB === "reference") return true;
+  return false;
+}
+
+function conflictingSameFoodServing(a, b) {
+  if (clearlyDistinctServing(a, b)) return false;
+  const kcalA = Math.max(1, num(a.calories));
+  const kcalB = Math.max(1, num(b.calories));
+  const ratio = Math.max(kcalA, kcalB) / Math.min(kcalA, kcalB);
+  if (ratio < 1.35) return false;
+
+  const kindA = servingLabelKind(a);
+  const kindB = servingLabelKind(b);
+  // Vague "1 serving" records must not compete with a concrete consumer serving when
+  // their nutrition differs substantially. This generalises to restaurant/menu data
+  // beyond any one chain.
+  if (kindA === "vague" || kindB === "vague") return true;
+  if (kindA === kindB) return true;
+  if ([kindA, kindB].every(kind => ["consumer", "other", "default"].includes(kind))) return true;
+  return false;
+}
+
 function chooseUsefulServings(group, intent, maxPerFood = 3) {
-  const ranked = [...group].sort((a, b) => scoreResult(b, intent) - scoreResult(a, intent));
+  const ranked = [...group]
+    .filter(nutritionLooksSane)
+    .sort((a, b) => scoreResult(b, intent) - scoreResult(a, intent));
   const selected = [];
   const seenNutrition = new Set();
 
   for (const item of ranked) {
-    if (!nutritionLooksSane(item)) continue;
     const macroKey = `${Math.round(item.calories)}|${Math.round(item.protein)}|${Math.round(item.carbs)}|${Math.round(item.fat)}|${fold(item.size)}`;
     if (seenNutrition.has(macroKey)) continue;
 
-    // Prefer default/consumer/size servings. Only show 100g when there isn't a better serving,
-    // or when the query itself asks for grams.
     if (item.servingKind === "reference" && selected.some(x => x.servingKind !== "reference") && !/\b\d+\s*g\b/.test(intent.normalized)) continue;
+    if (selected.some(existing => conflictingSameFoodServing(existing, item))) continue;
 
     selected.push(item);
     seenNutrition.add(macroKey);
@@ -559,6 +611,80 @@ function rankAndDedupe(results, query, limit = 30, options = {}) {
   }));
 }
 
+function metricServingBase(item) {
+  const amount = num(item.metricAmount, 0);
+  const unit = fold(item.metricUnit || "");
+  if (amount > 0) {
+    if (["g", "gram", "grams"].includes(unit)) return { amount, kind: "g" };
+    if (["kg", "kilogram", "kilograms"].includes(unit)) return { amount: amount * 1000, kind: "g" };
+    if (["ml", "milliliter", "milliliters", "millilitre", "millilitres"].includes(unit)) return { amount, kind: "ml" };
+    if (["l", "liter", "liters", "litre", "litres"].includes(unit)) return { amount: amount * 1000, kind: "ml" };
+  }
+  const serving = fold(item.serving || "");
+  const grams = serving.match(/\b(\d+(?:\.\d+)?)\s*g\b/);
+  if (grams) return { amount: num(grams[1]), kind: "g" };
+  const ml = serving.match(/\b(\d+(?:\.\d+)?)\s*ml\b/);
+  if (ml) return { amount: num(ml[1]), kind: "ml" };
+  return null;
+}
+
+function scaledServingFromIntent(ranked, intent) {
+  if (!ranked.length) return null;
+  const requested = intent.requestedGrams > 0 ? { amount: intent.requestedGrams, kind: "g", label: `${Math.round(intent.requestedGrams)} g` }
+    : intent.requestedMl > 0 ? { amount: intent.requestedMl, kind: "ml", label: `${Math.round(intent.requestedMl)} ml` }
+      : null;
+
+  if (requested) {
+    const base = ranked.find(item => {
+      const metric = metricServingBase(item);
+      return metric && metric.kind === requested.kind && metric.amount > 0;
+    });
+    if (!base) return null;
+    const metric = metricServingBase(base);
+    const factor = requested.amount / metric.amount;
+    if (!Number.isFinite(factor) || factor <= 0 || factor > 20) return null;
+    const derived = {
+      ...base,
+      id: stableId(base.id, "requested", requested.label),
+      serving: requested.label,
+      calories: num(base.calories) * factor,
+      protein: num(base.protein) * factor,
+      carbs: num(base.carbs) * factor,
+      fat: num(base.fat) * factor,
+      optionSummary: `${requested.label} · scaled from verified serving`,
+      source: `${base.source} · serving scaled`,
+      isDefault: true,
+      servingKind: "requested",
+      metricAmount: requested.amount,
+      metricUnit: requested.kind,
+      derivedFromVerifiedServing: true
+    };
+    return nutritionLooksSane(derived) ? derived : null;
+  }
+
+  if (intent.quantity > 1) {
+    const base = ranked.find(item => item.servingKind !== "reference") || ranked[0];
+    const factor = intent.quantity;
+    const derived = {
+      ...base,
+      id: stableId(base.id, "quantity", factor),
+      serving: `${factor} × ${base.serving}`,
+      calories: num(base.calories) * factor,
+      protein: num(base.protein) * factor,
+      carbs: num(base.carbs) * factor,
+      fat: num(base.fat) * factor,
+      optionSummary: `${factor} servings · scaled from verified serving`,
+      source: `${base.source} · quantity scaled`,
+      isDefault: true,
+      servingKind: "requested",
+      derivedFromVerifiedServing: true
+    };
+    return nutritionLooksSane(derived) ? derived : null;
+  }
+
+  return null;
+}
+
 async function searchFoods(query, region = "GB", language = "en", maxResults = 30) {
   if (!hasCredentials()) return [];
   const intent = parseIntent(query);
@@ -575,7 +701,6 @@ async function searchFoods(query, region = "GB", language = "en", maxResults = 3
 
   pushPlan(intent.raw, intent.brand ? "brand" : undefined);
   if (intent.brand && intent.itemText) pushPlan(`${intent.brand} ${intent.itemText}`, "brand");
-  if (intent.brand) pushPlan(intent.brand, "brand"); // fills same-brand related items, preventing unrelated fallbacks in the iOS client
   if (!intent.brand) pushPlan(intent.raw, undefined);
 
   const groups = await Promise.all(queryPlan.map(plan => rawSearch(plan.q, region, language, requested, plan.type)));
@@ -587,21 +712,9 @@ async function searchFoods(query, region = "GB", language = "en", maxResults = 3
   // First strict pass for the requested item.
   let ranked = rankAndDedupe(combined, query, requested, { maxServingsPerFood: 3 });
 
-  // The iOS client only uses its older fallbacks when V2 returns fewer than eight hits.
-  // For an explicit restaurant brand, fill the tail only with SAME-BRAND menu items, never another chain.
-  if (intent.brand && ranked.length < 8) {
-    const sameBrand = combined
-      .filter(item => brandMatches(item.brand, intent.brand))
-      .filter(nutritionLooksSane)
-      .sort((a, b) => scoreResult(b, { ...intent, itemTokens: [], itemText: "" }) - scoreResult(a, { ...intent, itemTokens: [], itemText: "" }));
-    const existing = new Set(ranked.map(servingDuplicateKey));
-    for (const item of sameBrand) {
-      const key = servingDuplicateKey(item);
-      if (existing.has(key)) continue;
-      ranked.push(item);
-      existing.add(key);
-      if (ranked.length >= Math.min(requested, 12)) break;
-    }
+  const requestedServing = scaledServingFromIntent(ranked, intent);
+  if (requestedServing) {
+    ranked = [requestedServing, ...ranked.filter(item => item.id !== requestedServing.id)];
   }
 
   ranked = ranked.slice(0, requested);
@@ -627,5 +740,10 @@ module.exports = {
   brandMatches,
   normalizeSearchPayload,
   nutritionLooksSane,
+  servingLabelKind,
+  clearlyDistinctServing,
+  conflictingSameFoodServing,
+  metricServingBase,
+  scaledServingFromIntent,
   clearSearchCache
 };
