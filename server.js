@@ -20,7 +20,8 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     foodDatabase: Boolean(process.env.FATSECRET_CLIENT_ID && process.env.FATSECRET_CLIENT_SECRET),
-    vision: Boolean(process.env.OPENAI_API_KEY)
+    vision: Boolean(process.env.OPENAI_API_KEY),
+    foodEngineVersion: "ultimate-2026-08-30"
   });
 });
 

@@ -1,6 +1,34 @@
-const axios = require("axios");
-
 let tokenCache = { token: null, expiresAt: 0 };
+const searchCache = new Map();
+const SEARCH_TTL_MS = 10 * 60 * 1000;
+
+const CHAIN_ALIASES = {
+  "mcdonald's": ["mcdonald's", "mcdonalds", "mcdonald", "maccies", "maccy d's", "maccy ds"],
+  "kfc": ["kfc", "kentucky fried chicken"],
+  "starbucks": ["starbucks", "star bucks"],
+  "costa coffee": ["costa coffee", "costa"],
+  "burger king": ["burger king", "bk"],
+  "wendy's": ["wendy's", "wendys"],
+  "subway": ["subway"],
+  "nando's": ["nando's", "nandos", "nando"],
+  "five guys": ["five guys"],
+  "caffè nero": ["caffè nero", "caffe nero", "cafe nero"],
+  "taco bell": ["taco bell"],
+  "domino's": ["domino's", "dominos"],
+  "pizza hut": ["pizza hut"],
+  "papa john's": ["papa john's", "papa johns"],
+  "dunkin'": ["dunkin'", "dunkin", "dunkin donuts"],
+  "chipotle": ["chipotle"],
+  "popeyes": ["popeyes"],
+  "wingstop": ["wingstop"],
+  "pret a manger": ["pret a manger", "pret"],
+  "greggs": ["greggs"],
+  "shake shack": ["shake shack"]
+};
+
+const STOP_WORDS = new Set([
+  "the", "a", "an", "and", "with", "from", "at", "of", "for", "to", "food", "restaurant"
+]);
 
 function asArray(value) {
   if (!value) return [];
@@ -26,65 +54,163 @@ function stableId(...parts) {
   return (hash >>> 0).toString(16);
 }
 
+function fold(value = "") {
+  return String(value)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[’‘`]/g, "'")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function tokens(value = "") {
+  return fold(value).split(/\s+/).filter(t => t.length > 1 && !STOP_WORDS.has(t));
+}
+
+function editDistance(a, b) {
+  const x = fold(a);
+  const y = fold(b);
+  if (x === y) return 0;
+  const row = Array.from({ length: y.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= x.length; i += 1) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= y.length; j += 1) {
+      const old = row[j];
+      const cost = x[i - 1] === y[j - 1] ? 0 : 1;
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + cost);
+      prev = old;
+    }
+  }
+  return row[y.length];
+}
+
+function fuzzyAliasInText(text, alias) {
+  const f = fold(text);
+  const a = fold(alias);
+  if (!a || a.length < 5) return false;
+  const aWords = a.split(/\s+/);
+  const words = f.split(/\s+/);
+  const width = aWords.length;
+  for (let i = 0; i <= words.length - width; i += 1) {
+    const candidate = words.slice(i, i + width).join(" ");
+    const threshold = a.length >= 10 ? 2 : 1;
+    if (editDistance(candidate, a) <= threshold) return true;
+  }
+  return false;
+}
+
+function removeAliasFromText(text, alias) {
+  const f = fold(text);
+  const a = fold(alias);
+  if (!a) return f;
+  if (f.includes(a)) return f.replace(a, " ").replace(/\s+/g, " ").trim();
+  const words = f.split(/\s+/);
+  const width = a.split(/\s+/).length;
+  let best = null;
+  for (let i = 0; i <= words.length - width; i += 1) {
+    const candidate = words.slice(i, i + width).join(" ");
+    const distance = editDistance(candidate, a);
+    if (!best || distance < best.distance) best = { i, distance };
+  }
+  const threshold = a.length >= 10 ? 2 : 1;
+  if (best && best.distance <= threshold) {
+    return [...words.slice(0, best.i), ...words.slice(best.i + width)].join(" ").trim();
+  }
+  return f;
+}
+
+function canonicalBrand(value = "") {
+  const f = fold(value);
+  if (!f) return "";
+  for (const [canonical, aliases] of Object.entries(CHAIN_ALIASES)) {
+    if (aliases.some(alias => {
+      const a = fold(alias);
+      return f === a || f.includes(a) || a.includes(f) || fuzzyAliasInText(f, a);
+    })) return canonical;
+  }
+  return f;
+}
+
+function parseIntent(query = "") {
+  const raw = clean(query);
+  const f = fold(raw);
+  let brand = "";
+  let matchedAlias = "";
+
+  for (const [canonical, aliases] of Object.entries(CHAIN_ALIASES)) {
+    const sorted = [...aliases].sort((a, b) => b.length - a.length);
+    const alias = sorted.find(a => f.includes(fold(a))) || sorted.find(a => fuzzyAliasInText(f, a));
+    if (alias) {
+      brand = canonical;
+      matchedAlias = fold(alias);
+      break;
+    }
+  }
+
+  let itemText = f;
+  if (matchedAlias) itemText = removeAliasFromText(itemText, matchedAlias);
+
+  const size = detectSize(raw);
+  const mealRequested = /\b(meal|combo|meal deal|box meal)\b/i.test(raw);
+  const quantityMatch = f.match(/^\s*(\d+(?:\.\d+)?)\s+/);
+  const quantity = quantityMatch ? Math.max(0.25, Math.min(num(quantityMatch[1], 1), 20)) : 1;
+
+  return {
+    raw,
+    normalized: f,
+    brand,
+    itemText,
+    itemTokens: tokens(itemText).filter(t => !["small", "medium", "large", "tall", "grande", "venti", "short", "meal", "combo"].includes(t)),
+    size,
+    mealRequested,
+    quantity,
+    isRestaurantIntent: Boolean(brand)
+  };
+}
+
 function hasCredentials() {
   return Boolean(process.env.FATSECRET_CLIENT_ID && process.env.FATSECRET_CLIENT_SECRET);
 }
 
 async function getAccessToken() {
+  const axios = require("axios");
   if (!hasCredentials()) return null;
-
   const now = Date.now();
-  if (tokenCache.token && tokenCache.expiresAt > now + 60_000) {
-    return tokenCache.token;
-  }
+  if (tokenCache.token && tokenCache.expiresAt > now + 60_000) return tokenCache.token;
 
-  const basic = Buffer.from(
-    `${process.env.FATSECRET_CLIENT_ID}:${process.env.FATSECRET_CLIENT_SECRET}`
-  ).toString("base64");
-
+  const basic = Buffer.from(`${process.env.FATSECRET_CLIENT_ID}:${process.env.FATSECRET_CLIENT_SECRET}`).toString("base64");
   const body = new URLSearchParams({ grant_type: "client_credentials" });
   const scope = clean(process.env.FATSECRET_SCOPE);
   if (scope) body.set("scope", scope);
 
-  const response = await axios.post(
-    "https://oauth.fatsecret.com/connect/token",
-    body.toString(),
-    {
-      timeout: 10_000,
-      headers: {
-        Authorization: `Basic ${basic}`,
-        "Content-Type": "application/x-www-form-urlencoded"
-      }
-    }
-  );
+  const response = await axios.post("https://oauth.fatsecret.com/connect/token", body.toString(), {
+    timeout: 10_000,
+    headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" }
+  });
 
   const token = response.data?.access_token;
   if (!token) throw new Error("FatSecret token response did not include access_token");
-
   const expiresIn = Math.max(120, num(response.data?.expires_in, 3600));
-  tokenCache = {
-    token,
-    expiresAt: now + (expiresIn - 60) * 1000
-  };
-
+  tokenCache = { token, expiresAt: now + (expiresIn - 60) * 1000 };
   return token;
 }
 
 async function apiGet(path, params = {}) {
+  const axios = require("axios");
   const token = await getAccessToken();
   if (!token) return null;
-
   const response = await axios.get(`https://platform.fatsecret.com/rest/${path}`, {
     timeout: 12_000,
     headers: { Authorization: `Bearer ${token}` },
     params: { ...params, format: "json" }
   });
-
   return response.data;
 }
 
 function detectSize(text = "") {
-  const t = text.toLowerCase();
+  const t = fold(text);
   if (/\bsmall\b/.test(t)) return "Small";
   if (/\bmedium\b/.test(t)) return "Medium";
   if (/\blarge\b/.test(t)) return "Large";
@@ -96,21 +222,16 @@ function detectSize(text = "") {
 }
 
 function detectFormat(text = "") {
-  const t = text.toLowerCase();
-  if (/\bmeal\b|\bcombo\b|\bmeal deal\b|\bwith fries\b|\bwith chips\b/.test(t)) {
-    return "Meal";
-  }
-  if (/\bdrink\b|\blatte\b|\bcoffee\b|\bmocha\b|\bcappuccino\b|\btea\b|\bcola\b/.test(t)) {
-    return "Drink";
-  }
+  const t = fold(text);
+  if (/\bmeal\b|\bcombo\b|\bmeal deal\b|\bwith fries\b|\bwith chips\b|\bbox meal\b/.test(t)) return "Meal";
+  if (/\bdrink\b|\blatte\b|\bcoffee\b|\bmocha\b|\bcappuccino\b|\btea\b|\bcola\b|\bfrappuccino\b|\brefresher\b/.test(t)) return "Drink";
   return "Item";
 }
 
 function detectProteinType(text = "") {
-  const t = text.toLowerCase();
+  const t = fold(text);
   if (t.includes("chicken")) return "Chicken";
-  if (t.includes("beef")) return "Beef";
-  if (t.includes("steak")) return "Beef";
+  if (t.includes("beef") || t.includes("steak") || t.includes("burger")) return "Beef";
   if (t.includes("fish") || t.includes("salmon") || t.includes("tuna")) return "Fish";
   if (t.includes("turkey")) return "Turkey";
   if (t.includes("lamb")) return "Lamb";
@@ -119,12 +240,26 @@ function detectProteinType(text = "") {
   return "";
 }
 
-function optionSummary(name, serving) {
-  return [
-    detectProteinType(name),
-    detectFormat(`${name} ${serving}`),
-    detectSize(`${name} ${serving}`)
-  ].filter(Boolean).join(" · ");
+function servingKind(serving = {}) {
+  const text = fold(serving.serving_description || serving.measurement_description || "");
+  if (num(serving.is_default) === 1) return "default";
+  if (/\b100\s*g\b|\b100g\b|\b100\s*ml\b/.test(text)) return "reference";
+  if (/\b1\s*(burger|sandwich|wrap|bottle|can|cup|piece|portion|serving|breast|fillet|slice|pack)\b/.test(text)) return "consumer";
+  if (/\bsmall\b|\bmedium\b|\blarge\b|\btall\b|\bgrande\b|\bventi\b|\bshort\b/.test(text)) return "size";
+  return "other";
+}
+
+function optionSummary(name, serving, foodType, isDefault) {
+  const parts = [];
+  const protein = detectProteinType(name);
+  const format = detectFormat(`${name} ${serving}`);
+  const size = detectSize(`${name} ${serving}`);
+  if (size) parts.push(size);
+  if (format !== "Item") parts.push(format);
+  if (protein && !parts.includes(protein)) parts.push(protein);
+  if (isDefault) parts.push("Recommended serving");
+  if (String(foodType).toLowerCase() === "brand") parts.push("Branded food");
+  return parts.join(" · ");
 }
 
 function normalizeServing(food, serving, region, index = 0) {
@@ -133,18 +268,22 @@ function normalizeServing(food, serving, region, index = 0) {
   const foodId = clean(food.food_id || food.id);
   const servingText = clean(serving?.serving_description) ||
     [serving?.number_of_units, serving?.measurement_description].filter(Boolean).join(" ") ||
-    clean(food.serving_description) ||
-    "1 serving";
+    clean(food.serving_description) || "1 serving";
 
   const calories = num(serving?.calories ?? food.calories);
   const protein = num(serving?.protein ?? food.protein);
   const carbs = num(serving?.carbohydrate ?? serving?.carbs ?? food.carbohydrate ?? food.carbs);
   const fat = num(serving?.fat ?? food.fat);
-
   if (!name || (calories <= 0 && protein <= 0 && carbs <= 0 && fat <= 0)) return null;
+
+  const isDefault = num(serving?.is_default) === 1;
+  const foodType = clean(food.food_type || "");
+  const kind = servingKind(serving || {});
 
   return {
     id: stableId("fatsecret", foodId, serving?.serving_id || index, servingText),
+    foodId,
+    servingId: clean(serving?.serving_id || index),
     name,
     brand,
     serving: servingText,
@@ -155,11 +294,16 @@ function normalizeServing(food, serving, region, index = 0) {
     source: "FatSecret verified database",
     confidence: 0.97,
     verified: true,
-    optionSummary: optionSummary(name, servingText),
+    optionSummary: optionSummary(name, servingText, foodType, isDefault),
     proteinType: detectProteinType(name),
     format: detectFormat(`${name} ${servingText}`),
     size: detectSize(`${name} ${servingText}`),
-    region
+    region,
+    foodType,
+    isDefault,
+    servingKind: kind,
+    metricAmount: num(serving?.metric_serving_amount, 0),
+    metricUnit: clean(serving?.metric_serving_unit)
   };
 }
 
@@ -170,82 +314,83 @@ function normalizeFood(food, region) {
     const one = normalizeServing(food, null, region, 0);
     return one ? [one] : [];
   }
-
-  return servings
-    .map((serving, index) => normalizeServing(food, serving, region, index))
-    .filter(Boolean);
+  return servings.map((serving, index) => normalizeServing(food, serving, region, index)).filter(Boolean);
 }
 
 function normalizeSearchPayload(data, region) {
-  const foods = asArray(data?.foods?.food || data?.foods_search?.results?.food || data?.food);
+  const foods = asArray(data?.foods_search?.results?.food || data?.foods?.food || data?.food);
   return foods.flatMap(food => normalizeFood(food, region));
 }
 
-async function getFoodById(foodId, region, language) {
-  const attempts = ["food/v5", "food/v4", "food/v3"];
-  let lastError = null;
-
-  for (const path of attempts) {
-    try {
-      const data = await apiGet(path, {
-        food_id: foodId,
-        region,
-        language,
-        flag_default_serving: true
-      });
-      const food = data?.food || data;
-      const normalized = normalizeFood(food, region);
-      if (normalized.length) return normalized;
-    } catch (error) {
-      lastError = error;
-      const status = error.response?.status;
-      if (status === 401 || status === 403) continue;
+async function searchPathWithLocaleFallback(path, params, requestedRegion) {
+  try {
+    const data = await apiGet(path, params);
+    return { data, effectiveRegion: requestedRegion, localized: true };
+  } catch (error) {
+    const status = error.response?.status;
+    // Localization is a FatSecret premium capability. If the account cannot use it,
+    // retry without locale instead of failing the whole food search. FatSecret then
+    // defaults to its US/en dataset, and we label that honestly in the response.
+    if ((status === 401 || status === 403) && (params.region || params.language)) {
+      const retry = { ...params };
+      delete retry.region;
+      delete retry.language;
+      try {
+        const data = await apiGet(path, retry);
+        return { data, effectiveRegion: "US", localized: false };
+      } catch (retryError) {
+        retryError.originalStatus = status;
+        throw retryError;
+      }
     }
+    throw error;
   }
-
-  if (lastError && !lastError.response) throw lastError;
-  return [];
 }
 
-async function searchFoods(query, region = "GB", language = "en", maxResults = 30) {
-  if (!hasCredentials()) return [];
-
-  const bounded = Math.max(1, Math.min(num(maxResults, 30), 50));
+async function rawSearch(query, region, language, maxResults, foodType) {
   const common = {
     search_expression: query,
-    max_results: bounded,
+    max_results: Math.max(1, Math.min(num(maxResults, 30), 50)),
     page_number: 0,
     region,
     language,
     flag_default_serving: true
   };
 
-  const richPaths = ["foods/search/v5", "foods/search/v3"];
-  for (const path of richPaths) {
-    try {
-      const data = await apiGet(path, common);
-      const results = normalizeSearchPayload(data, region);
-      if (results.length) return results;
-    } catch (error) {
-      const status = error.response?.status;
-      console.warn(`FatSecret ${path} unavailable${status ? ` (${status})` : ""}; trying fallback.`);
-    }
+  try {
+    const response = await searchPathWithLocaleFallback(
+      "foods/search/v5",
+      { ...common, ...(foodType ? { food_type: foodType } : {}) },
+      region
+    );
+    const results = normalizeSearchPayload(response.data, response.effectiveRegion);
+    if (results.length) return results;
+  } catch (error) {
+    const status = error.response?.status || error.originalStatus;
+    console.warn(`FatSecret foods/search/v5 unavailable${status ? ` (${status})` : ""}; trying v3.`);
   }
 
   try {
-    const data = await apiGet("foods/search/v1", common);
-    const foods = asArray(data?.foods?.food);
-    const detailedGroups = await Promise.all(
-      foods.slice(0, Math.min(bounded, 20)).map(async food => {
-        if (!food?.food_id) return normalizeFood(food, region);
-        try {
-          const details = await getFoodById(food.food_id, region, language);
-          return details.length ? details : normalizeFood(food, region);
-        } catch {
-          return normalizeFood(food, region);
-        }
-      })
-    );
+    const response = await searchPathWithLocaleFallback("foods/search/v3", common, region);
+    const results = normalizeSearchPayload(response.data, response.effectiveRegion);
+    if (results.length) return results;
+  } catch (error) {
+    const status = error.response?.status || error.originalStatus;
+    console.warn(`FatSecret foods/search/v3 unavailable${status ? ` (${status})` : ""}; trying v1.`);
+  }
+
+  try {
+    const response = await searchPathWithLocaleFallback("foods/search/v1", common, region);
+    const foods = asArray(response.data?.foods?.food);
+    const detailedGroups = await Promise.all(foods.slice(0, Math.min(common.max_results, 20)).map(async food => {
+      if (!food?.food_id) return normalizeFood(food, response.effectiveRegion);
+      try {
+        const details = await getFoodById(food.food_id, response.effectiveRegion, language);
+        return details.length ? details : normalizeFood(food, response.effectiveRegion);
+      } catch {
+        return normalizeFood(food, response.effectiveRegion);
+      }
+    }));
     return detailedGroups.flat();
   } catch (error) {
     console.error("FatSecret search failed:", error.message);
@@ -253,46 +398,234 @@ async function searchFoods(query, region = "GB", language = "en", maxResults = 3
   }
 }
 
-function textScore(result, query) {
-  const q = clean(query).toLowerCase();
-  const tokens = q.split(/\s+/).filter(token => token.length > 1);
-  const hay = `${result.brand || ""} ${result.name || ""} ${result.serving || ""} ${result.optionSummary || ""}`.toLowerCase();
+async function getFoodById(foodId, region, language) {
+  for (const path of ["food/v5", "food/v3", "food/v1"]) {
+    const params = { food_id: foodId, region, language, flag_default_serving: true };
+    try {
+      const response = await searchPathWithLocaleFallback(path, params, region);
+      const normalized = normalizeFood(response.data?.food || response.data, response.effectiveRegion);
+      if (normalized.length) return normalized;
+    } catch (error) {
+      const status = error.response?.status || error.originalStatus;
+      if (status !== 401 && status !== 403) console.warn(`FatSecret ${path} detail failed:`, error.message);
+    }
+  }
+  return [];
+}
 
-  let score = (num(result.confidence, 0.7) * 100) + (result.verified ? 25 : 0);
-  if (hay === q) score += 80;
-  if (hay.startsWith(q)) score += 45;
-  if (hay.includes(q)) score += 30;
+function brandMatches(resultBrand, intendedBrand) {
+  if (!intendedBrand) return true;
+  const rb = canonicalBrand(resultBrand);
+  const ib = canonicalBrand(intendedBrand);
+  if (!rb || !ib) return false;
+  return rb === ib || rb.includes(ib) || ib.includes(rb);
+}
 
-  tokens.forEach(token => {
-    if (hay.includes(token)) score += 8;
-  });
+function itemCoverage(result, intent) {
+  if (!intent.itemTokens.length) return 1;
+  const hayTokens = new Set(tokens(`${result.name} ${result.serving}`));
+  const matched = intent.itemTokens.filter(t => hayTokens.has(t) || [...hayTokens].some(h => h.includes(t) || t.includes(h))).length;
+  return matched / intent.itemTokens.length;
+}
 
-  const requestedSize = detectSize(q).toLowerCase();
-  if (requestedSize && result.size?.toLowerCase() === requestedSize) score += 25;
+function scoreResult(result, queryOrIntent) {
+  const intent = typeof queryOrIntent === "string" ? parseIntent(queryOrIntent) : queryOrIntent;
+  const title = fold(`${result.brand || ""} ${result.name || ""}`);
+  const serving = fold(result.serving || "");
+  const resultBrand = canonicalBrand(result.brand || "");
+  const intendedBrand = canonicalBrand(intent.brand || "");
+  const coverage = itemCoverage(result, intent);
+  let score = num(result.confidence, 0.7) * 100 + (result.verified ? 28 : 0);
 
-  if (/\bmeal\b|\bcombo\b/.test(q) && result.format === "Meal") score += 25;
-  if (!/\bmeal\b|\bcombo\b/.test(q) && result.format === "Item") score += 4;
+  if (intendedBrand) {
+    if (brandMatches(resultBrand, intendedBrand)) score += 140;
+    else if (resultBrand) score -= 220;
+    else score -= 90;
+  }
+
+  if (intent.itemTokens.length) {
+    score += coverage * 120;
+    if (coverage === 1) score += 55;
+    if (coverage < 0.5) score -= 100;
+  }
+
+  if (title === intent.normalized) score += 90;
+  if (title.includes(intent.itemText) && intent.itemText) score += 45;
+
+  if (intent.size) {
+    if (fold(result.size) === fold(intent.size) || serving.includes(fold(intent.size))) score += 45;
+    else if (result.size) score -= 20;
+  }
+
+  if (intent.mealRequested) {
+    if (result.format === "Meal") score += 55;
+    else score -= 12;
+  } else if (result.format === "Meal") {
+    score -= 15;
+  }
+
+  if (result.isDefault) score += 28;
+  if (result.servingKind === "consumer") score += 22;
+  if (result.servingKind === "size") score += 20;
+  if (result.servingKind === "reference") score -= 20;
+  if (String(result.foodType).toLowerCase() === "brand" && intendedBrand) score += 18;
+  if (String(result.region).toUpperCase() === String(result.region || "").toUpperCase()) score += 2;
 
   return score;
 }
 
-function rankAndDedupe(results, query, limit = 30) {
-  const seen = new Set();
-  return results
-    .filter(item => item && item.name)
-    .filter(item => {
-      const key = `${item.brand}|${item.name}|${item.serving}`.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((a, b) => textScore(b, query) - textScore(a, query))
-    .slice(0, limit);
+function nutritionLooksSane(item) {
+  const values = [item.calories, item.protein, item.carbs, item.fat].map(v => num(v, -1));
+  if (values.some(v => v < 0)) return false;
+  if (item.calories > 6000 || item.protein > 500 || item.carbs > 1000 || item.fat > 500) return false;
+  if (values.every(v => v === 0)) return false;
+  // Macro-derived energy is only a loose sanity check because alcohol/fibre/rounding exist.
+  const macroKcal = item.protein * 4 + item.carbs * 4 + item.fat * 9;
+  if (item.calories > 80 && macroKcal > 0) {
+    const ratio = macroKcal / item.calories;
+    if (ratio < 0.35 || ratio > 1.8) return false;
+  }
+  return true;
+}
+
+function canonicalFoodKey(item) {
+  return `${canonicalBrand(item.brand)}|${fold(item.name)}`;
+}
+
+function servingDuplicateKey(item) {
+  const kcal = Math.round(num(item.calories));
+  const p = Math.round(num(item.protein));
+  const c = Math.round(num(item.carbs));
+  const f = Math.round(num(item.fat));
+  const size = fold(item.size);
+  const serving = fold(item.serving).replace(/\s+/g, " ");
+  return `${canonicalFoodKey(item)}|${size}|${serving}|${kcal}|${p}|${c}|${f}`;
+}
+
+function chooseUsefulServings(group, intent, maxPerFood = 3) {
+  const ranked = [...group].sort((a, b) => scoreResult(b, intent) - scoreResult(a, intent));
+  const selected = [];
+  const seenNutrition = new Set();
+
+  for (const item of ranked) {
+    if (!nutritionLooksSane(item)) continue;
+    const macroKey = `${Math.round(item.calories)}|${Math.round(item.protein)}|${Math.round(item.carbs)}|${Math.round(item.fat)}|${fold(item.size)}`;
+    if (seenNutrition.has(macroKey)) continue;
+
+    // Prefer default/consumer/size servings. Only show 100g when there isn't a better serving,
+    // or when the query itself asks for grams.
+    if (item.servingKind === "reference" && selected.some(x => x.servingKind !== "reference") && !/\b\d+\s*g\b/.test(intent.normalized)) continue;
+
+    selected.push(item);
+    seenNutrition.add(macroKey);
+    if (selected.length >= maxPerFood) break;
+  }
+  return selected;
+}
+
+function rankAndDedupe(results, query, limit = 30, options = {}) {
+  const intent = parseIntent(query);
+  const minCoverage = intent.itemTokens.length >= 2 ? 0.5 : intent.itemTokens.length === 1 ? 1 : 0;
+  const filtered = results.filter(item => item && item.name && nutritionLooksSane(item)).filter(item => {
+    if (intent.brand && !brandMatches(item.brand, intent.brand)) return false;
+    if (intent.itemTokens.length && itemCoverage(item, intent) < minCoverage) return false;
+    return true;
+  });
+
+  const exactSeen = new Set();
+  const deExact = filtered.filter(item => {
+    const key = servingDuplicateKey(item);
+    if (exactSeen.has(key)) return false;
+    exactSeen.add(key);
+    return true;
+  });
+
+  const groups = new Map();
+  deExact.forEach(item => {
+    const key = canonicalFoodKey(item);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+
+  let compact = [];
+  for (const group of groups.values()) {
+    compact.push(...chooseUsefulServings(group, intent, options.maxServingsPerFood || 3));
+  }
+
+  compact.sort((a, b) => scoreResult(b, intent) - scoreResult(a, intent));
+  return compact.slice(0, Math.max(1, Math.min(num(limit, 30), 50))).map(item => ({
+    ...item,
+    confidence: Math.max(0.5, Math.min(0.995, num(item.confidence, 0.9)))
+  }));
+}
+
+async function searchFoods(query, region = "GB", language = "en", maxResults = 30) {
+  if (!hasCredentials()) return [];
+  const intent = parseIntent(query);
+  const cacheKey = `${intent.normalized}|${region}|${language}|${maxResults}`;
+  const cached = searchCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.results.map(x => ({ ...x }));
+
+  const requested = Math.max(12, Math.min(50, num(maxResults, 30)));
+  const queryPlan = [];
+  const pushPlan = (q, type) => {
+    const key = `${fold(q)}|${type || "all"}`;
+    if (q && !queryPlan.some(x => x.key === key)) queryPlan.push({ key, q, type });
+  };
+
+  pushPlan(intent.raw, intent.brand ? "brand" : undefined);
+  if (intent.brand && intent.itemText) pushPlan(`${intent.brand} ${intent.itemText}`, "brand");
+  if (intent.brand) pushPlan(intent.brand, "brand"); // fills same-brand related items, preventing unrelated fallbacks in the iOS client
+  if (!intent.brand) pushPlan(intent.raw, undefined);
+
+  const groups = await Promise.all(queryPlan.map(plan => rawSearch(plan.q, region, language, requested, plan.type)));
+  let combined = groups.flat();
+
+  // If v5 brand filtering was unavailable, enforce brand intent locally.
+  if (intent.brand) combined = combined.filter(item => brandMatches(item.brand, intent.brand));
+
+  // First strict pass for the requested item.
+  let ranked = rankAndDedupe(combined, query, requested, { maxServingsPerFood: 3 });
+
+  // The iOS client only uses its older fallbacks when V2 returns fewer than eight hits.
+  // For an explicit restaurant brand, fill the tail only with SAME-BRAND menu items, never another chain.
+  if (intent.brand && ranked.length < 8) {
+    const sameBrand = combined
+      .filter(item => brandMatches(item.brand, intent.brand))
+      .filter(nutritionLooksSane)
+      .sort((a, b) => scoreResult(b, { ...intent, itemTokens: [], itemText: "" }) - scoreResult(a, { ...intent, itemTokens: [], itemText: "" }));
+    const existing = new Set(ranked.map(servingDuplicateKey));
+    for (const item of sameBrand) {
+      const key = servingDuplicateKey(item);
+      if (existing.has(key)) continue;
+      ranked.push(item);
+      existing.add(key);
+      if (ranked.length >= Math.min(requested, 12)) break;
+    }
+  }
+
+  ranked = ranked.slice(0, requested);
+  searchCache.set(cacheKey, { expiresAt: Date.now() + SEARCH_TTL_MS, results: ranked });
+  if (searchCache.size > 250) {
+    const oldestKey = searchCache.keys().next().value;
+    searchCache.delete(oldestKey);
+  }
+  return ranked.map(x => ({ ...x }));
+}
+
+function clearSearchCache() {
+  searchCache.clear();
 }
 
 module.exports = {
   hasCredentials,
   searchFoods,
   rankAndDedupe,
-  textScore
+  scoreResult,
+  parseIntent,
+  canonicalBrand,
+  brandMatches,
+  normalizeSearchPayload,
+  nutritionLooksSane,
+  clearSearchCache
 };

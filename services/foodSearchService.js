@@ -2,6 +2,7 @@ const { searchUSDA } = require("./usdaService");
 const { searchOpenFoodFacts } = require("./openFoodFactsService");
 const { findLocalNutritionMatch } = require("./localNutritionService");
 const { buildCustomisedNutrition } = require("./customisationEngine");
+const { searchFoods, hasCredentials } = require("./fatSecretService");
 
 function round(value) {
   return Math.round(Number(value) || 0);
@@ -101,15 +102,7 @@ async function buildSingleAIResult(parsed) {
     }
   }
 
-  if (!baseNutrition) {
-    baseNutrition = {
-      calories: 200,
-      protein: 8,
-      carbs: 25,
-      fat: 7
-    };
-    source = "AI-style fallback";
-  }
+  if (!baseNutrition) return null;
 
   const customised = buildCustomisedNutrition(baseNutrition, parsed);
 
@@ -128,21 +121,36 @@ async function buildSingleAIResult(parsed) {
 
 async function searchFood(parsed) {
   const query = parsed.rawQuery || parsed.foodName || "";
+
+  // Keep the legacy endpoint useful for older app versions, but let the same verified
+  // database/ranking engine power it when credentials are available.
+  if (hasCredentials() && query.trim()) {
+    const verified = await searchFoods(query, "GB", "en", 10);
+    if (verified.length) {
+      return verified.map(item => ({
+        name: item.brand && !item.name.toLowerCase().startsWith(item.brand.toLowerCase())
+          ? `${item.brand} ${item.name}`
+          : item.name,
+        calories: round(item.calories),
+        protein: round(item.protein),
+        carbs: round(item.carbs),
+        fat: round(item.fat),
+        serving: item.serving || "1 serving",
+        source: item.source || "FatSecret verified database",
+        confidence: item.verified ? "high" : "medium"
+      })).slice(0, 10);
+    }
+  }
+
   const smartResults = searchSmartLibrary(query);
-
-  const aiResult = await buildSingleAIResult(parsed);
-
-  const combined = [aiResult, ...smartResults];
+  const fallbackResult = await buildSingleAIResult(parsed);
+  const combined = [fallbackResult, ...smartResults].filter(Boolean);
 
   const unique = [];
   const seen = new Set();
-
   combined.forEach(item => {
-    const key = item.name.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(item);
-    }
+    const key = `${item.name}|${item.serving}`.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); unique.push(item); }
   });
 
   return unique.slice(0, 10);
